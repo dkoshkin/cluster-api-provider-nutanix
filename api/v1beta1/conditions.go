@@ -71,10 +71,11 @@ const (
 )
 
 const (
-	// CredentialRefSecretOwnerSetCondition shows the status of setting the Owner
-	CredentialRefSecretOwnerSetCondition capiv1.ConditionType = "CredentialRefSecretOwnerSet"
+	// CredentialRefSecretFinalizerSetCondition shows the status of setting the finalizer on the credential Secret
+	CredentialRefSecretFinalizerSetCondition capiv1.ConditionType = "CredentialRefSecretFinalizerSet"
+	CredentialRefSecretFinalizerSetFailed                         = "CredentialRefSecretFinalizerSetFailed"
 
-	CredentialRefSecretOwnerSetFailed  = "CredentialRefSecretOwnerSetFailed"
-	TrustBundleSecretOwnerSetCondition = "TrustBundleSecretOwnerSet"
-	TrustBundleSecretOwnerSetFailed    = "TrustBundleSecretOwnerSetFailed"
+	// TrustBundleSecretFinalizerSetCondition shows the status of setting the finalizer on the trust bundle ConfigMap
+	TrustBundleSecretFinalizerSetCondition capiv1.ConditionType = "TrustBundleSecretFinalizerSet"
+	TrustBundleSecretFinalizerSetFailed                         = "TrustBundleSecretFinalizerSetFailed"
 )

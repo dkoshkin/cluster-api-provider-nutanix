@@ -18,6 +18,8 @@ package v1beta1
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	credentialTypes "github.com/nutanix-cloud-native/prism-go-client/environment/credentials"
@@ -30,13 +32,26 @@ import (
 const (
 	// NutanixClusterKind represents the Kind of NutanixCluster
 	NutanixClusterKind = "NutanixCluster"
-
-	// NutanixClusterFinalizer allows NutanixClusterReconciler to clean up AHV
-	// resources associated with NutanixCluster before removing it from the
-	// API Server.
-	NutanixClusterFinalizer           = "nutanixcluster.infrastructure.cluster.x-k8s.io"
-	NutanixClusterCredentialFinalizer = "nutanixcluster/infrastructure.cluster.x-k8s.io"
 )
+
+const (
+	// NutanixClusterFinalizer allows NutanixClusterReconciler to clean up AHV resources associated with NutanixCluster
+	// before removing it from the API Server.
+	NutanixClusterFinalizer = "nutanixcluster.infrastructure.cluster.x-k8s.io"
+	// DeprecatedNutanixClusterCredentialFinalizer was used when the credentials Secret and trust bundle ConfigMap
+	// could only be owned by a single NutanixCluster object and a static finalizer was enough.
+	// Now that the OwnerReferences are no longer being enforced, multiple NutanixCluster objects can reference the same
+	// Secret and ConfigMap and new finalizer based on the cluster name and namespace is used.
+	DeprecatedNutanixClusterCredentialFinalizer = "nutanixcluster/infrastructure.cluster.x-k8s.io"
+)
+
+// NutanixClusterCredentialFinalizer generates a finalizer key.
+// The finalizer key is a combination of the prefix and a hash of the cluster name and namespace.
+// A hash is used to ensure that the finalizer key name is not longer than 63 characters.
+func NutanixClusterCredentialFinalizer(clusterName, clusterNamespace string) string {
+	hash := sha256.Sum224([]byte(fmt.Sprintf("%s-%s", clusterNamespace, clusterName)))
+	return fmt.Sprintf("%s/%s", NutanixClusterFinalizer, hex.EncodeToString(hash[:]))
+}
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.

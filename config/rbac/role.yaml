@@ -9,7 +9,6 @@ rules:
   resources:
   - configmaps
   verbs:
-  - delete
   - get
   - list
   - update
@@ -28,7 +27,6 @@ rules:
   resources:
   - secrets
   verbs:
-  - delete
   - get
   - list
   - update

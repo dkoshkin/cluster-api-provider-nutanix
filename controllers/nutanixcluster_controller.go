@@ -25,7 +25,6 @@ import (
 	credentialTypes "github.com/nutanix-cloud-native/prism-go-client/environment/credentials"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -108,7 +107,8 @@ func (r *NutanixClusterReconciler) SetupWithManager(ctx context.Context, mgr ctr
 	return nil
 }
 
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;update;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=nutanixclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=nutanixclusters/status,verbs=get;update;patch
@@ -179,15 +179,17 @@ func (r *NutanixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if err := r.reconcileCredentialRef(ctx, cluster); err != nil {
 		log.Error(err, fmt.Sprintf("error occurred while reconciling credential ref for cluster %s", capiCluster.Name))
-		conditions.MarkFalse(cluster, infrav1.CredentialRefSecretOwnerSetCondition, infrav1.CredentialRefSecretOwnerSetFailed, capiv1.ConditionSeverityError, err.Error())
+		conditions.MarkFalse(cluster, infrav1.CredentialRefSecretFinalizerSetCondition, infrav1.CredentialRefSecretFinalizerSetFailed, capiv1.ConditionSeverityError, err.Error())
 		return reconcile.Result{}, err
 	}
-	conditions.MarkTrue(cluster, infrav1.CredentialRefSecretOwnerSetCondition)
+	conditions.MarkTrue(cluster, infrav1.CredentialRefSecretFinalizerSetCondition)
 
 	if err := r.reconcileTrustBundleRef(ctx, cluster); err != nil {
 		log.Error(err, fmt.Sprintf("error occurred while reconciling trust bundle ref for cluster %s", capiCluster.Name))
+		conditions.MarkFalse(cluster, infrav1.TrustBundleSecretFinalizerSetCondition, infrav1.TrustBundleSecretFinalizerSetFailed, capiv1.ConditionSeverityError, err.Error())
 		return reconcile.Result{}, err
 	}
+	conditions.MarkTrue(cluster, infrav1.TrustBundleSecretFinalizerSetCondition)
 
 	v3Client, err := getPrismCentralClientForCluster(ctx, cluster, r.SecretInformer, r.ConfigMapInformer)
 	if err != nil {
@@ -372,15 +374,10 @@ func (r *NutanixClusterReconciler) reconcileCredentialRefDelete(ctx context.Cont
 		}
 		return err
 	}
-	ctrlutil.RemoveFinalizer(secret, infrav1.NutanixClusterCredentialFinalizer)
-	log.V(1).Info(fmt.Sprintf("removing finalizers from secret %s in namespace %s for cluster %s", secret.Name, secret.Namespace, nutanixCluster.Name))
-	if err := r.Client.Update(ctx, secret); err != nil {
-		return err
-	}
-
-	if secret.DeletionTimestamp.IsZero() {
-		log.Info(fmt.Sprintf("removing secret %s in namespace %s for cluster %s", secret.Name, secret.Namespace, nutanixCluster.Name))
-		if err := r.Client.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
+	removedFinalizer := ctrlutil.RemoveFinalizer(secret, infrav1.NutanixClusterCredentialFinalizer(nutanixCluster.Name, nutanixCluster.Namespace))
+	if removedFinalizer {
+		log.V(1).Info(fmt.Sprintf("removing finalizers from secret %s in namespace %s for cluster %s", secret.Name, secret.Namespace, nutanixCluster.Name))
+		if err := r.Client.Update(ctx, secret); err != nil {
 			return err
 		}
 	}
@@ -404,35 +401,19 @@ func (r *NutanixClusterReconciler) reconcileTrustBundleRef(ctx context.Context, 
 	}
 	if err := r.Client.Get(ctx, configMapKey, configMap); err != nil {
 		log.Error(err, "error occurred while fetching trust bundle configmap", "nutanixCluster", nutanixCluster.Name)
-		conditions.MarkFalse(nutanixCluster, infrav1.TrustBundleSecretOwnerSetCondition, infrav1.TrustBundleSecretOwnerSetFailed, capiv1.ConditionSeverityError, err.Error())
 		return err
 	}
 
-	if !capiutil.IsOwnedByObject(configMap, nutanixCluster) {
-		// Check if another nutanixCluster already has set ownerRef. Secret can only be owned by one nutanixCluster object
-		if capiutil.HasOwner(configMap.OwnerReferences, infrav1.GroupVersion.String(), []string{nutanixCluster.Kind}) {
-			return fmt.Errorf("configmap %s/%s already owned by another nutanixCluster object", configMap.Namespace, configMap.Name)
+	// Remove deprecated finalizer if it exists and add a new finalizer immediately to avoid orphaning the ConfigMap on delete
+	removedFinalizer := ctrlutil.RemoveFinalizer(configMap, infrav1.DeprecatedNutanixClusterCredentialFinalizer)
+	addedFinalizer := ctrlutil.AddFinalizer(configMap, infrav1.NutanixClusterCredentialFinalizer(nutanixCluster.Name, nutanixCluster.Namespace))
+	if removedFinalizer || addedFinalizer {
+		if err := r.Client.Update(ctx, configMap); err != nil {
+			log.Error(err, "error occurred while updating trust bundle configmap", "nutanixCluster", nutanixCluster)
+			return err
 		}
-
-		configMap.OwnerReferences = capiutil.EnsureOwnerRef(configMap.OwnerReferences, metav1.OwnerReference{
-			APIVersion: infrav1.GroupVersion.String(),
-			Kind:       nutanixCluster.Kind,
-			UID:        nutanixCluster.UID,
-			Name:       nutanixCluster.Name,
-		})
 	}
 
-	if !ctrlutil.ContainsFinalizer(configMap, infrav1.NutanixClusterCredentialFinalizer) {
-		ctrlutil.AddFinalizer(configMap, infrav1.NutanixClusterCredentialFinalizer)
-	}
-
-	if err := r.Client.Update(ctx, configMap); err != nil {
-		log.Error(err, "error occurred while updating trust bundle configmap", "nutanixCluster", nutanixCluster)
-		conditions.MarkFalse(nutanixCluster, infrav1.TrustBundleSecretOwnerSetCondition, infrav1.TrustBundleSecretOwnerSetFailed, capiv1.ConditionSeverityError, err.Error())
-		return err
-	}
-
-	conditions.MarkTrue(nutanixCluster, infrav1.TrustBundleSecretOwnerSetCondition)
 	return nil
 }
 
@@ -459,15 +440,10 @@ func (r *NutanixClusterReconciler) reconcileTrustBundleRefDelete(ctx context.Con
 		return err
 	}
 
-	ctrlutil.RemoveFinalizer(configMap, infrav1.NutanixClusterCredentialFinalizer)
-	log.V(1).Info(fmt.Sprintf("removing finalizers from configmap %s/%s for cluster %s", configMap.Namespace, configMap.Name, nutanixCluster.Name))
-	if err := r.Client.Update(ctx, configMap); err != nil {
-		return err
-	}
-
-	if configMap.DeletionTimestamp.IsZero() {
-		log.Info(fmt.Sprintf("removing configmap %s/%s for cluster %s", configMap.Namespace, configMap.Name, nutanixCluster.Name))
-		if err := r.Client.Delete(ctx, configMap); err != nil && !errors.IsNotFound(err) {
+	removedFinalizer := ctrlutil.RemoveFinalizer(configMap, infrav1.NutanixClusterCredentialFinalizer(nutanixCluster.Name, nutanixCluster.Namespace))
+	if removedFinalizer {
+		log.V(1).Info(fmt.Sprintf("removing finalizers from configmap %s/%s for cluster %s", configMap.Namespace, configMap.Name, nutanixCluster.Name))
+		if err := r.Client.Update(ctx, configMap); err != nil {
 			return err
 		}
 	}
@@ -495,36 +471,18 @@ func (r *NutanixClusterReconciler) reconcileCredentialRef(ctx context.Context, n
 
 	if err := r.Client.Get(ctx, secretKey, secret); err != nil {
 		errorMsg := fmt.Errorf("error occurred while fetching cluster %s secret for credential ref: %v", nutanixCluster.Name, err)
-		log.Error(errorMsg, "error occurred fetching cluster")
 		return errorMsg
 	}
 
-	// Check if ownerRef is already set on nutanixCluster object
-	if !capiutil.IsOwnedByObject(secret, nutanixCluster) {
-		// Check if another nutanixCluster already has set ownerRef. Secret can only be owned by one nutanixCluster object
-		if capiutil.HasOwner(secret.OwnerReferences, infrav1.GroupVersion.String(), []string{
-			nutanixCluster.Kind,
-		}) {
-			return fmt.Errorf("secret %s already owned by another nutanixCluster object", secret.Name)
+	// Remove deprecated finalizer if it exists and add a new finalizer immediately to avoid orphaning the Secret on delete
+	removedFinalizer := ctrlutil.RemoveFinalizer(secret, infrav1.DeprecatedNutanixClusterCredentialFinalizer)
+	addedFinalizer := ctrlutil.AddFinalizer(secret, infrav1.NutanixClusterCredentialFinalizer(nutanixCluster.Name, nutanixCluster.Namespace))
+	if removedFinalizer || addedFinalizer {
+		err = r.Client.Update(ctx, secret)
+		if err != nil {
+			errorMsg := fmt.Errorf("failed to update secret for cluster %s: %v", nutanixCluster.Name, err)
+			return errorMsg
 		}
-		// Set nutanixCluster ownerRef on the secret
-		secret.OwnerReferences = capiutil.EnsureOwnerRef(secret.OwnerReferences, metav1.OwnerReference{
-			APIVersion: infrav1.GroupVersion.String(),
-			Kind:       nutanixCluster.Kind,
-			UID:        nutanixCluster.UID,
-			Name:       nutanixCluster.Name,
-		})
-	}
-
-	if !ctrlutil.ContainsFinalizer(secret, infrav1.NutanixClusterCredentialFinalizer) {
-		ctrlutil.AddFinalizer(secret, infrav1.NutanixClusterCredentialFinalizer)
-	}
-
-	err = r.Client.Update(ctx, secret)
-	if err != nil {
-		errorMsg := fmt.Errorf("failed to update secret for cluster %s: %v", nutanixCluster.Name, err)
-		log.Error(errorMsg, "failed to update secret")
-		return errorMsg
 	}
 
 	return nil

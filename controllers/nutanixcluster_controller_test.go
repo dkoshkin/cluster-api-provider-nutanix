@@ -246,7 +246,7 @@ func TestNutanixClusterReconciler(t *testing.T) {
 			})
 		})
 		Context("Reconcile credentialRef for a NutanixCluster", func() {
-			It("should return error if already owned by another NutanixCluster", func() {
+			It("should not add an ownerReference", func() {
 				// Create an additional NutanixCluster object
 				additionalNtnxCluster := &infrav1.NutanixCluster{
 					ObjectMeta: metav1.ObjectMeta{
@@ -282,9 +282,18 @@ func TestNutanixClusterReconciler(t *testing.T) {
 
 				// Reconcile credentialRef
 				err := reconciler.reconcileCredentialRef(ctx, ntnxCluster)
-				g.Expect(err).To(HaveOccurred())
+				g.Expect(err).ToNot(HaveOccurred())
+
+				// Get latest secret status
+				g.Expect(k8sClient.Get(ctx, ctlclient.ObjectKey{
+					Namespace: ntnxSecret.Namespace,
+					Name:      ntnxSecret.Name,
+				}, ntnxSecret)).To(Succeed())
+
+				// Check the secret ownerReference were not updated
+				g.Expect(capiutil.IsOwnedByObject(ntnxSecret, ntnxCluster)).To(BeFalse())
 			})
-			It("should add credentialRef and finalizer if not owned by other cluster", func() {
+			It("should add finalizer for a single cluster", func() {
 				// Add credential ref to the ntnxCluster resource
 				ntnxCluster.Spec.PrismCentral.CredentialRef = &credentialtypes.NutanixCredentialReference{
 					Kind:      credentialtypes.SecretKind,
@@ -305,13 +314,10 @@ func TestNutanixClusterReconciler(t *testing.T) {
 					Name:      ntnxSecret.Name,
 				}, ntnxSecret)).To(Succeed())
 
-				// Check if secret is owned by the NutanixCluster
-				g.Expect(capiutil.IsOwnedByObject(ntnxSecret, ntnxCluster)).To(BeTrue())
-
-				// check finalizer
-				g.Expect(ctrlutil.ContainsFinalizer(ntnxSecret, infrav1.NutanixClusterCredentialFinalizer))
+				// Check finalizer was added
+				g.Expect(ctrlutil.ContainsFinalizer(ntnxSecret, infrav1.NutanixClusterCredentialFinalizer(ntnxCluster.Name, ntnxCluster.Namespace))).To(BeTrue())
 			})
-			It("does not add another credentialRef if it is already set", func() {
+			It("should add finalizers for multiple clusters", func() {
 				// Add credential ref to the ntnxCluster resource
 				ntnxCluster.Spec.PrismCentral.CredentialRef = &credentialtypes.NutanixCredentialReference{
 					Kind:      credentialtypes.SecretKind,
@@ -319,20 +325,38 @@ func TestNutanixClusterReconciler(t *testing.T) {
 					Namespace: ntnxSecret.Namespace,
 				}
 
-				// Add an ownerReference for the  NutanixCluster object
-				ntnxSecret.OwnerReferences = []metav1.OwnerReference{
-					{
-						APIVersion: infrav1.GroupVersion.String(),
+				// Create an additional NutanixCluster object
+				additionalNtnxCluster := &infrav1.NutanixCluster{
+					TypeMeta: metav1.TypeMeta{
 						Kind:       infrav1.NutanixClusterKind,
-						UID:        ntnxCluster.UID,
-						Name:       ntnxCluster.Name,
+						APIVersion: infrav1.GroupVersion.String(),
 					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      r,
+						Namespace: corev1.NamespaceDefault,
+					},
+					Spec: infrav1.NutanixClusterSpec{
+						PrismCentral: &credentialtypes.NutanixPrismEndpoint{
+							// Adding port info to override default value (0)
+							Port: 9440,
+						},
+					},
+				}
+				g.Expect(k8sClient.Create(ctx, additionalNtnxCluster)).To(Succeed())
+
+				// Add credential ref to the additionalNtnxCluster resource
+				additionalNtnxCluster.Spec.PrismCentral.CredentialRef = &credentialtypes.NutanixCredentialReference{
+					Kind:      credentialtypes.SecretKind,
+					Name:      ntnxSecret.Name,
+					Namespace: ntnxSecret.Namespace,
 				}
 
 				g.Expect(k8sClient.Create(ctx, ntnxSecret)).To(Succeed())
 
-				// Reconcile credentialRef
+				// Reconcile credentialRef for both clusters
 				err := reconciler.reconcileCredentialRef(ctx, ntnxCluster)
+				g.Expect(err).ToNot(HaveOccurred())
+				err = reconciler.reconcileCredentialRef(ctx, additionalNtnxCluster)
 				g.Expect(err).ToNot(HaveOccurred())
 
 				// Get latest secret status
@@ -341,14 +365,11 @@ func TestNutanixClusterReconciler(t *testing.T) {
 					Name:      ntnxSecret.Name,
 				}, ntnxSecret)).To(Succeed())
 
-				// Check if secret is owned by the NutanixCluster
-				g.Expect(capiutil.IsOwnedByObject(ntnxSecret, ntnxCluster)).To(BeTrue())
-
-				// check if only one ownerReference has been added
-				g.Expect(len(ntnxSecret.OwnerReferences)).To(Equal(1))
+				// Check a finalizer was added for both clusters
+				g.Expect(ctrlutil.ContainsFinalizer(ntnxSecret, infrav1.NutanixClusterCredentialFinalizer(additionalNtnxCluster.Name, additionalNtnxCluster.Namespace))).To(BeTrue())
+				g.Expect(ctrlutil.ContainsFinalizer(ntnxSecret, infrav1.NutanixClusterCredentialFinalizer(additionalNtnxCluster.Name, additionalNtnxCluster.Namespace))).To(BeTrue())
 			})
-
-			It("allows multiple ownerReferences with different kinds", func() {
+			It("should remove deprecated finalizer and add a new finalizer", func() {
 				// Add credential ref to the ntnxCluster resource
 				ntnxCluster.Spec.PrismCentral.CredentialRef = &credentialtypes.NutanixCredentialReference{
 					Kind:      credentialtypes.SecretKind,
@@ -356,16 +377,9 @@ func TestNutanixClusterReconciler(t *testing.T) {
 					Namespace: ntnxSecret.Namespace,
 				}
 
-				// Add an ownerReference for a fake object
-				ntnxSecret.OwnerReferences = []metav1.OwnerReference{
-					{
-						APIVersion: capiv1.GroupVersion.String(),
-						Kind:       clusterKind,
-						UID:        ntnxCluster.UID,
-						Name:       r,
-					},
-				}
+				ctrlutil.AddFinalizer(ntnxSecret, infrav1.DeprecatedNutanixClusterCredentialFinalizer)
 
+				// Create secret
 				g.Expect(k8sClient.Create(ctx, ntnxSecret)).To(Succeed())
 
 				// Reconcile credentialRef
@@ -378,10 +392,11 @@ func TestNutanixClusterReconciler(t *testing.T) {
 					Name:      ntnxSecret.Name,
 				}, ntnxSecret)).To(Succeed())
 
-				// Check if secret is owned by the NutanixCluster
-				g.Expect(capiutil.IsOwnedByObject(ntnxSecret, ntnxCluster)).To(BeTrue())
-
-				g.Expect(len(ntnxSecret.OwnerReferences)).To(Equal(2))
+				// Check deprecated finalizer was removed
+				g.Expect(len(ntnxSecret.Finalizers)).To(Equal(1))
+				g.Expect(ctrlutil.ContainsFinalizer(ntnxSecret, infrav1.DeprecatedNutanixClusterCredentialFinalizer)).To(BeFalse())
+				// Check new finalizer was added
+				g.Expect(ctrlutil.ContainsFinalizer(ntnxSecret, infrav1.NutanixClusterCredentialFinalizer(ntnxCluster.Name, ntnxCluster.Namespace))).To(BeTrue())
 			})
 			It("should error if secret does not exist", func() {
 				// Add credential ref to the ntnxCluster resource
@@ -451,18 +466,18 @@ func TestNutanixClusterReconciler(t *testing.T) {
 				}()
 
 				// Add finalizer to Nutanix Secret
-				g.Expect(ctrlutil.AddFinalizer(ntnxSecret, infrav1.NutanixClusterCredentialFinalizer)).To(BeTrue())
+				g.Expect(ctrlutil.AddFinalizer(ntnxSecret, infrav1.DeprecatedNutanixClusterCredentialFinalizer)).To(BeTrue())
 				g.Expect(k8sClient.Update(ctx, ntnxSecret)).To(Succeed())
 
 				// Reconile Delete credential ref
 				err := reconciler.reconcileCredentialRefDelete(ctx, ntnxCluster)
 				g.Expect(err).NotTo(HaveOccurred())
 
-				// Check that Nutanix Secret is deleted
+				// Check that Nutanix Secret was not deleted
 				g.Expect(k8sClient.Get(ctx, ctlclient.ObjectKey{
 					Namespace: ntnxSecret.Namespace,
 					Name:      ntnxSecret.Name,
-				}, ntnxSecret)).ToNot(Succeed())
+				}, ntnxSecret)).To(Succeed())
 			})
 		})
 
@@ -822,12 +837,16 @@ func TestReconcileTrustBundleRefWithExistingOwner(t *testing.T) {
 		return nil
 	})
 
+	fakeClient.EXPECT().Update(ctx, gomock.Any()).DoAndReturn(func(_ context.Context, obj runtime.Object, _ ...ctlclient.UpdateOption) error {
+		return nil
+	})
+
 	reconciler := &NutanixClusterReconciler{
 		Client: fakeClient,
 	}
 
 	err := reconciler.reconcileTrustBundleRef(ctx, nutanixCluster)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
 
 func TestNutanixClusterReconciler_SetupWithManager(t *testing.T) {
@@ -896,7 +915,7 @@ func TestReconcileTrustBundleRefDelete(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-configmap",
 			Namespace:  "test-ns",
-			Finalizers: []string{infrav1.NutanixClusterCredentialFinalizer},
+			Finalizers: []string{infrav1.NutanixClusterCredentialFinalizer(nutanixCluster.Name, nutanixCluster.Namespace)},
 		},
 	}
 
@@ -978,27 +997,6 @@ func TestReconcileTrustBundleRefDelete(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("should return error if Delete returns error other than not found", func(t *testing.T) {
-		nutanixCluster.Spec.PrismCentral = &credentialtypes.NutanixPrismEndpoint{
-			AdditionalTrustBundle: &credentialtypes.NutanixTrustBundleReference{
-				Kind:      credentialtypes.NutanixTrustBundleKindConfigMap,
-				Name:      configMap.Name,
-				Namespace: configMap.Namespace,
-			},
-		}
-
-		fakeClient.EXPECT().Get(ctx, configMapKey, gomock.Any()).DoAndReturn(func(_ context.Context, _ ctlclient.ObjectKey, obj runtime.Object, _ ...ctlclient.GetOption) error {
-			configMap.DeepCopyInto(obj.(*corev1.ConfigMap))
-			return nil
-		})
-
-		fakeClient.EXPECT().Update(ctx, gomock.Any()).Return(nil)
-		fakeClient.EXPECT().Delete(ctx, gomock.Any()).Return(apierrors.NewBadRequest("bad request"))
-
-		err := reconciler.reconcileTrustBundleRefDelete(ctx, nutanixCluster)
-		assert.Error(t, err)
-	})
-
 	t.Run("should return no errors if configmap already deleted", func(t *testing.T) {
 		nutanixCluster.Spec.PrismCentral = &credentialtypes.NutanixPrismEndpoint{
 			AdditionalTrustBundle: &credentialtypes.NutanixTrustBundleReference{
@@ -1014,7 +1012,6 @@ func TestReconcileTrustBundleRefDelete(t *testing.T) {
 		})
 
 		fakeClient.EXPECT().Update(ctx, gomock.Any()).Return(nil)
-		fakeClient.EXPECT().Delete(ctx, gomock.Any()).Return(apierrors.NewNotFound(schema.GroupResource{}, "configmap not found"))
 
 		err := reconciler.reconcileTrustBundleRefDelete(ctx, nutanixCluster)
 		assert.NoError(t, err)
