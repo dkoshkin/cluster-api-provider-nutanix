@@ -114,15 +114,15 @@ var _ = Describe("Nutanix client", Label("capx-feature-test", "nutanix-client"),
 				}, clusterResources)
 		})
 
-		By("Checking CredentialRefSecretOwnerSet condition is false", func() {
+		By("Checking CredentialRefSecretFinalizerSet condition is false", func() {
 			testHelper.verifyConditionOnNutanixCluster(verifyConditionParams{
 				clusterName:           clusterName,
 				namespace:             namespace,
 				bootstrapClusterProxy: bootstrapClusterProxy,
 				expectedCondition: clusterv1.Condition{
-					Type:     infrav1.CredentialRefSecretOwnerSetCondition,
+					Type:     infrav1.CredentialRefSecretFinalizerSetCondition,
 					Status:   corev1.ConditionFalse,
-					Reason:   infrav1.CredentialRefSecretOwnerSetFailed,
+					Reason:   infrav1.CredentialRefSecretFinalizerSetFailed,
 					Severity: clusterv1.ConditionSeverityError,
 				},
 			})
@@ -197,8 +197,8 @@ var _ = Describe("Nutanix client", Label("capx-feature-test", "nutanix-client"),
 				namespace:             namespace,
 				bootstrapClusterProxy: bootstrapClusterProxy,
 				expectedCondition: clusterv1.Condition{
-					Type:     infrav1.CredentialRefSecretOwnerSetCondition,
-					Reason:   infrav1.CredentialRefSecretOwnerSetFailed,
+					Type:     infrav1.CredentialRefSecretFinalizerSetCondition,
+					Reason:   infrav1.CredentialRefSecretFinalizerSetFailed,
 					Severity: clusterv1.ConditionSeverityError,
 					Status:   corev1.ConditionFalse,
 				},
@@ -221,7 +221,7 @@ var _ = Describe("Nutanix client", Label("capx-feature-test", "nutanix-client"),
 				namespace:             namespace,
 				bootstrapClusterProxy: bootstrapClusterProxy,
 				expectedCondition: clusterv1.Condition{
-					Type:   infrav1.CredentialRefSecretOwnerSetCondition,
+					Type:   infrav1.CredentialRefSecretFinalizerSetCondition,
 					Status: corev1.ConditionTrue,
 				},
 			})
@@ -277,7 +277,7 @@ var _ = Describe("Nutanix client", Label("capx-feature-test", "nutanix-client"),
 				namespace:             namespace,
 				bootstrapClusterProxy: bootstrapClusterProxy,
 				expectedCondition: clusterv1.Condition{
-					Type:   infrav1.CredentialRefSecretOwnerSetCondition,
+					Type:   infrav1.CredentialRefSecretFinalizerSetCondition,
 					Status: corev1.ConditionTrue,
 				},
 			})

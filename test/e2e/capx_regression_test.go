@@ -127,7 +127,7 @@ var _ = Describe("Nutanix regression tests", Label("capx-feature-test", "regress
 				namespace:             namespace,
 				bootstrapClusterProxy: bootstrapClusterProxy,
 				expectedCondition: clusterv1.Condition{
-					Type:   infrav1.CredentialRefSecretOwnerSetCondition,
+					Type:   infrav1.CredentialRefSecretFinalizerSetCondition,
 					Status: corev1.ConditionTrue,
 				},
 			})
